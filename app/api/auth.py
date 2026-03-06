@@ -106,22 +106,29 @@ async def get_current_user(
 
 @router.post("/register", response_model=TokenResponse)
 async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == req.email))
-    if result.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already registered")
+    import traceback as _tb
+    try:
+        result = await db.execute(select(User).where(User.email == req.email))
+        if result.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="Email already registered")
 
-    user = User(
-        email=req.email,
-        password_hash=pwd_context.hash(req.password),
-    )
-    db.add(user)
-    await db.flush()
+        user = User(
+            email=req.email,
+            password_hash=pwd_context.hash(req.password),
+        )
+        db.add(user)
+        await db.flush()
 
-    prefs = UserPreferences(user_id=user.id)
-    db.add(prefs)
-    await db.commit()
+        prefs = UserPreferences(user_id=user.id)
+        db.add(prefs)
+        await db.commit()
 
-    return TokenResponse(access_token=create_access_token(str(user.id)))
+        return TokenResponse(access_token=create_access_token(str(user.id)))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"[REGISTER ERROR] {type(exc).__name__}: {exc}\n{_tb.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Registration error: {type(exc).__name__}: {exc}")
 
 
 @router.post("/login", response_model=TokenResponse)
