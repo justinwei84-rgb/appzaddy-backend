@@ -40,6 +40,7 @@ class Settings(BaseSettings):
         env="CORS_ORIGINS",
     )
     encryption_key: str = Field("", env="ENCRYPTION_KEY")
+    admin_secret: str = Field("", env="ADMIN_SECRET")
 
     # Cache TTL
     company_research_ttl_seconds: int = 60 * 60 * 48  # 48 hours

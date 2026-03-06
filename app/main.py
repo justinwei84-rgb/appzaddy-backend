@@ -5,7 +5,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db.database import engine, Base
-from app.api import auth, resume, jobs
+from app.api import auth, resume, jobs, admin
 from app.services.redis_client import get_redis
 
 
@@ -96,6 +96,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(resume.router, prefix="/resume", tags=["resume"])
 app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
+app.include_router(admin.router, prefix="/admin", tags=["admin"])
 
 
 @app.get("/health")
