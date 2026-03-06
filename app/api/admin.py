@@ -47,13 +47,19 @@ async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
     days_30_ago = today_start - timedelta(days=29)
     days_7_ago = today_start - timedelta(days=6)
 
+    # User.created_at is TIMESTAMP (tz-naive) — strip tzinfo for those comparisons
+    today_start_naive = today_start.replace(tzinfo=None)
+    month_start_naive = month_start.replace(tzinfo=None)
+    days_30_ago_naive = days_30_ago.replace(tzinfo=None)
+    days_7_ago_naive = days_7_ago.replace(tzinfo=None)
+
     # ── User stats ──
     total_users = (await db.execute(select(func.count(User.id)))).scalar()
     new_7d = (await db.execute(
-        select(func.count(User.id)).where(User.created_at >= days_7_ago)
+        select(func.count(User.id)).where(User.created_at >= days_7_ago_naive)
     )).scalar()
     new_30d = (await db.execute(
-        select(func.count(User.id)).where(User.created_at >= days_30_ago)
+        select(func.count(User.id)).where(User.created_at >= days_30_ago_naive)
     )).scalar()
 
     # Registrations by day (last 30 days)
@@ -62,7 +68,7 @@ async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
             func.date_trunc("day", User.created_at).label("day"),
             func.count(User.id).label("count"),
         )
-        .where(User.created_at >= days_30_ago)
+        .where(User.created_at >= days_30_ago_naive)
         .group_by(func.date_trunc("day", User.created_at))
         .order_by(func.date_trunc("day", User.created_at))
     )).all()
