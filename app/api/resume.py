@@ -8,6 +8,7 @@ from app.models.resume import UserResume, SeniorityLevel
 from app.api.auth import get_current_user
 from app.services.resume_parser import extract_resume_text
 from app.services.claude_service import parse_resume_text
+from app.services.usage_tracker import check_spend_limit, record_usage
 
 router = APIRouter()
 
@@ -32,16 +33,30 @@ async def upload_resume(
     # 1. Extract raw text
     text = await extract_resume_text(file)
 
-    # 2. Parse with Claude
-    structured = await parse_resume_text(text)
+    # 2. Check spend limit before calling Claude
+    await check_spend_limit("anthropic", db)
 
-    # 3. Map seniority
+    # 3. Parse with Claude
+    structured, claude_usage = await parse_resume_text(text)
+
+    # 4. Record usage
+    await record_usage(
+        db,
+        api_name="anthropic",
+        operation="resume_parse",
+        user_id=current_user.id,
+        tokens_input=claude_usage.input_tokens,
+        tokens_output=claude_usage.output_tokens,
+        cost_usd=claude_usage.cost_usd,
+    )
+
+    # 5. Map seniority
     try:
         seniority = SeniorityLevel(structured.inferred_seniority_level)
     except ValueError:
         seniority = SeniorityLevel.mid
 
-    # 4. Upsert UserResume
+    # 6. Upsert UserResume
     resume = current_user.resume
     if not resume:
         resume = UserResume(user_id=current_user.id)

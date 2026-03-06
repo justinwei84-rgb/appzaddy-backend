@@ -19,6 +19,7 @@ from app.services.scoring import compute_full_score
 from app.services.google_search import search_company, normalize_company_name
 from app.services.claude_service import summarize_company_research, generate_scoring_narrative
 from app.services.google_sheets import save_job_to_sheet
+from app.services.usage_tracker import check_spend_limit, record_usage
 from app.config import settings
 
 router = APIRouter()
@@ -56,9 +57,11 @@ class SaveJobRequest(BaseModel):
 async def get_or_create_company_research(
     company_name: str,
     db: AsyncSession,
+    user_id: Optional[uuid.UUID] = None,
 ) -> dict:
     """
     Check Redis → Postgres → run search. Cache at both layers.
+    Records Google CSE and Anthropic usage when a fresh fetch is needed.
     """
     # Skip lookup entirely for empty/unknown company names to avoid
     # cache collisions where all "unknown" jobs share the same key.
@@ -75,13 +78,13 @@ async def get_or_create_company_research(
     normalized = normalize_company_name(company_name)
     cache_key = f"company_research:{normalized}"
 
-    # 1. Redis fast path
+    # 1. Redis fast path (no API calls → no usage to record)
     redis = await redis_client.get_redis()
     cached = await redis.get(cache_key)
     if cached:
         return json.loads(cached)
 
-    # 2. Postgres cache
+    # 2. Postgres cache (no API calls → no usage to record)
     result = await db.execute(
         select(CompanyResearchCache).where(
             CompanyResearchCache.company_name_normalized == normalized,
@@ -105,9 +108,28 @@ async def get_or_create_company_research(
         )
         return data
 
-    # 3. Run fresh research
-    snippets = await search_company(company_name)
-    research = await summarize_company_research(company_name, snippets)
+    # 3. Run fresh research — check limits before each external call
+    await check_spend_limit("google_cse", db)
+    snippets, queries_made = await search_company(company_name)
+    await record_usage(
+        db,
+        api_name="google_cse",
+        operation="company_search",
+        user_id=user_id,
+        queries_count=queries_made,
+    )
+
+    await check_spend_limit("anthropic", db)
+    research, claude_usage = await summarize_company_research(company_name, snippets)
+    await record_usage(
+        db,
+        api_name="anthropic",
+        operation="company_research",
+        user_id=user_id,
+        tokens_input=claude_usage.input_tokens,
+        tokens_output=claude_usage.output_tokens,
+        cost_usd=claude_usage.cost_usd,
+    )
 
     expires_at = datetime.utcnow() + timedelta(
         seconds=settings.company_research_ttl_seconds
@@ -189,16 +211,17 @@ async def analyze_job(
     job = req.job_data
     job_dict = job.model_dump()
 
-    # Get company intelligence (cached)
+    # Get company intelligence (cached; records usage internally when fresh)
     company_research = await get_or_create_company_research(
-        job.company_name, db
+        job.company_name, db, user_id=current_user.id
     )
 
     # Compute scores
     scores = compute_full_score(job_dict, resume_data, prefs, company_research)
 
-    # Generate narrative via Claude
-    narrative = await generate_scoring_narrative(
+    # Generate narrative via Claude — check limit first
+    await check_spend_limit("anthropic", db)
+    narrative, narrative_usage = await generate_scoring_narrative(
         job_title=job.job_title,
         company_name=job.company_name,
         recommendation=scores["recommendation"].value,
@@ -209,6 +232,15 @@ async def analyze_job(
         user_skills=resume_data.get("skills", []),
         job_description_snippet=job.job_description,
         company_summary=company_research["summary"],
+    )
+    await record_usage(
+        db,
+        api_name="anthropic",
+        operation="scoring_narrative",
+        user_id=current_user.id,
+        tokens_input=narrative_usage.input_tokens,
+        tokens_output=narrative_usage.output_tokens,
+        cost_usd=narrative_usage.cost_usd,
     )
 
     # Persist analysis

@@ -5,12 +5,15 @@ Uses claude-opus-4-6 for:
   - Resume parsing (JSON prompt → parse response)
   - Company research summarization
   - Scoring narrative generation
+
+Each function returns (result, ClaudeUsage) so callers can record token usage.
 """
 
 import json
 import re
+from dataclasses import dataclass
 from pydantic import BaseModel
-from typing import List
+from typing import List, Tuple
 import anthropic
 
 from app.config import settings
@@ -18,6 +21,17 @@ from app.config import settings
 client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 MODEL = "claude-opus-4-6"
+
+# Pricing for claude-opus-4-6  (update here if Anthropic changes rates)
+_INPUT_COST_PER_TOKEN = 15.0 / 1_000_000   # $15 per million input tokens
+_OUTPUT_COST_PER_TOKEN = 75.0 / 1_000_000  # $75 per million output tokens
+
+
+@dataclass
+class ClaudeUsage:
+    input_tokens: int
+    output_tokens: int
+    cost_usd: float
 
 
 def _extract_json(text: str) -> str:
@@ -27,6 +41,13 @@ def _extract_json(text: str) -> str:
     if m:
         return m.group(1).strip()
     return text
+
+
+def _compute_usage(response) -> ClaudeUsage:
+    inp = response.usage.input_tokens
+    out = response.usage.output_tokens
+    cost = inp * _INPUT_COST_PER_TOKEN + out * _OUTPUT_COST_PER_TOKEN
+    return ClaudeUsage(input_tokens=inp, output_tokens=out, cost_usd=cost)
 
 
 # ── Pydantic schemas ────────────────────────────────────────────────────────
@@ -57,7 +78,7 @@ class ScoringNarrative(BaseModel):
 
 # ── Resume parsing ──────────────────────────────────────────────────────────
 
-async def parse_resume_text(text: str) -> ResumeStructured:
+async def parse_resume_text(text: str) -> Tuple[ResumeStructured, ClaudeUsage]:
     """Extract structured information from raw resume text using Claude."""
 
     system = (
@@ -84,14 +105,14 @@ async def parse_resume_text(text: str) -> ResumeStructured:
 
     raw = response.content[0].text
     data = json.loads(_extract_json(raw))
-    return ResumeStructured(**data)
+    return ResumeStructured(**data), _compute_usage(response)
 
 
 # ── Company research summarization ─────────────────────────────────────────
 
 async def summarize_company_research(
     company_name: str, snippets: List[str]
-) -> CompanyResearchResult:
+) -> Tuple[CompanyResearchResult, ClaudeUsage]:
     """Given raw search snippets about a company, produce a structured summary."""
 
     combined = "\n".join(f"- {s}" for s in snippets[:20])
@@ -133,7 +154,7 @@ async def summarize_company_research(
 
     raw = response.content[0].text
     data = json.loads(_extract_json(raw))
-    return CompanyResearchResult(**data)
+    return CompanyResearchResult(**data), _compute_usage(response)
 
 
 # ── Scoring narrative ───────────────────────────────────────────────────────
@@ -149,7 +170,7 @@ async def generate_scoring_narrative(
     user_skills: List[str],
     job_description_snippet: str,
     company_summary: str,
-) -> ScoringNarrative:
+) -> Tuple[ScoringNarrative, ClaudeUsage]:
     """Generate a human-readable summary and key drivers for the analysis result."""
 
     system = (
@@ -184,4 +205,4 @@ async def generate_scoring_narrative(
 
     raw = response.content[0].text
     data = json.loads(_extract_json(raw))
-    return ScoringNarrative(**data)
+    return ScoringNarrative(**data), _compute_usage(response)
