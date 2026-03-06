@@ -4,7 +4,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, text
+from sqlalchemy import select, func, text, cast, Date
 from pydantic import BaseModel
 
 from app.config import settings
@@ -75,12 +75,12 @@ async def _get_stats_impl(secret: str, db: AsyncSession):
     # Registrations by day (last 30 days)
     reg_rows = (await db.execute(
         select(
-            func.date_trunc("day", User.created_at).label("day"),
+            cast(User.created_at, Date).label("day"),
             func.count(User.id).label("count"),
         )
         .where(User.created_at >= days_30_ago_naive)
-        .group_by(func.date_trunc("day", User.created_at))
-        .order_by(func.date_trunc("day", User.created_at))
+        .group_by(cast(User.created_at, Date))
+        .order_by(cast(User.created_at, Date))
     )).all()
     registrations = [
         {"date": r.day.strftime("%Y-%m-%d"), "count": r.count}
@@ -140,15 +140,15 @@ async def _get_stats_impl(secret: str, db: AsyncSession):
     # ── By day (last 30 days) ──
     by_day_rows = (await db.execute(
         select(
-            func.date_trunc("day", ApiUsage.created_at).label("day"),
+            cast(ApiUsage.created_at, Date).label("day"),
             ApiUsage.api_name,
             func.coalesce(func.sum(ApiUsage.cost_usd), 0).label("cost"),
             func.coalesce(func.sum(ApiUsage.queries_count), 0).label("queries"),
             func.count(ApiUsage.id).label("calls"),
         )
         .where(ApiUsage.created_at >= days_30_ago)
-        .group_by(func.date_trunc("day", ApiUsage.created_at), ApiUsage.api_name)
-        .order_by(func.date_trunc("day", ApiUsage.created_at))
+        .group_by(cast(ApiUsage.created_at, Date), ApiUsage.api_name)
+        .order_by(cast(ApiUsage.created_at, Date))
     )).all()
 
     by_day_map: dict = {}
