@@ -51,6 +51,8 @@ async def check_spend_limit(api_name: str, db: AsyncSession) -> None:
     month = _month_start()
 
     # Daily USD check
+    _USER_MSG = "Service currently unavailable, please try again later."
+
     if limit.daily_limit_usd is not None:
         row = await db.execute(
             select(func.coalesce(func.sum(ApiUsage.cost_usd), 0.0)).where(
@@ -60,10 +62,8 @@ async def check_spend_limit(api_name: str, db: AsyncSession) -> None:
         )
         daily_spend = row.scalar()
         if daily_spend >= limit.daily_limit_usd:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Daily spend limit of ${limit.daily_limit_usd:.2f} reached for {api_name}. Resets at midnight UTC.",
-            )
+            print(f"[SPEND LIMIT] {api_name} daily limit ${limit.daily_limit_usd:.2f} reached (spent ${daily_spend:.4f})")
+            raise HTTPException(status_code=503, detail=_USER_MSG)
 
     # Monthly USD check
     if limit.monthly_limit_usd is not None:
@@ -75,10 +75,8 @@ async def check_spend_limit(api_name: str, db: AsyncSession) -> None:
         )
         monthly_spend = row.scalar()
         if monthly_spend >= limit.monthly_limit_usd:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Monthly spend limit of ${limit.monthly_limit_usd:.2f} reached for {api_name}. Resets next month.",
-            )
+            print(f"[SPEND LIMIT] {api_name} monthly limit ${limit.monthly_limit_usd:.2f} reached (spent ${monthly_spend:.4f})")
+            raise HTTPException(status_code=503, detail=_USER_MSG)
 
     # Daily query count check (Google CSE only)
     if api_name == "google_cse" and limit.google_daily_query_limit is not None:
@@ -90,10 +88,8 @@ async def check_spend_limit(api_name: str, db: AsyncSession) -> None:
         )
         daily_queries = row.scalar()
         if daily_queries >= limit.google_daily_query_limit:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Daily Google CSE query limit of {limit.google_daily_query_limit} reached. Resets at midnight UTC.",
-            )
+            print(f"[SPEND LIMIT] google_cse daily query limit {limit.google_daily_query_limit} reached ({daily_queries} used)")
+            raise HTTPException(status_code=503, detail=_USER_MSG)
 
 
 async def record_usage(
