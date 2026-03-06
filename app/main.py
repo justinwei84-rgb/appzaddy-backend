@@ -71,9 +71,19 @@ async def _run_migrations(conn):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: create tables then run migrations
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        await _run_migrations(conn)
+    import traceback
+    try:
+        print("[STARTUP] Connecting to database...")
+        async with engine.begin() as conn:
+            print("[STARTUP] Running create_all...")
+            await conn.run_sync(Base.metadata.create_all)
+            print("[STARTUP] Running migrations...")
+            await _run_migrations(conn)
+        print("[STARTUP] Database ready.")
+    except Exception as e:
+        print(f"[STARTUP ERROR] {type(e).__name__}: {e}")
+        traceback.print_exc()
+        raise
     yield
     # Shutdown
     await engine.dispose()
