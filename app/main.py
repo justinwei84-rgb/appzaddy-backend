@@ -49,43 +49,6 @@ async def _run_migrations(conn):
         if not result.fetchone():
             await conn.execute(text(f"ALTER TABLE users ADD COLUMN {col} {definition}"))
 
-    # Create api_usage table if missing (for existing deployed DBs)
-    await conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS api_usage (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            user_id UUID REFERENCES users(id),
-            api_name VARCHAR(50) NOT NULL,
-            operation VARCHAR(100) NOT NULL,
-            tokens_input INTEGER NOT NULL DEFAULT 0,
-            tokens_output INTEGER NOT NULL DEFAULT 0,
-            cost_usd FLOAT NOT NULL DEFAULT 0.0,
-            queries_count INTEGER NOT NULL DEFAULT 0
-        )
-    """))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_api_usage_created_at ON api_usage (created_at)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_api_usage_api_name ON api_usage (api_name)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_api_usage_user_id ON api_usage (user_id)"
-    ))
-
-    # Create spend_limits table if missing
-    await conn.execute(text("""
-        CREATE TABLE IF NOT EXISTS spend_limits (
-            id SERIAL PRIMARY KEY,
-            api_name VARCHAR(50) UNIQUE NOT NULL,
-            daily_limit_usd FLOAT,
-            monthly_limit_usd FLOAT,
-            google_daily_query_limit INTEGER,
-            enabled BOOLEAN NOT NULL DEFAULT TRUE,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """))
-
     # Add industry/location/comp columns to job_analyses if missing
     for col, definition in [
         ("industry", "VARCHAR(255) DEFAULT ''"),
