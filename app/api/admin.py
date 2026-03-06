@@ -40,6 +40,16 @@ async def list_users(secret: str, db: AsyncSession = Depends(get_db)):
 @router.get("/stats")
 async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
     _check_secret(secret)
+    import traceback as _tb
+    try:
+        return await _get_stats_impl(secret, db)
+    except Exception as exc:
+        err = _tb.format_exc()
+        print(f"[ADMIN STATS ERROR] {exc}\n{err}")
+        raise HTTPException(status_code=500, detail=f"Stats error: {exc}")
+
+
+async def _get_stats_impl(secret: str, db: AsyncSession):
 
     now_utc = datetime.now(timezone.utc)
     today_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
