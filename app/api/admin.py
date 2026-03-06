@@ -12,6 +12,7 @@ from app.db.database import get_db
 from app.models.user import User
 from app.models.api_usage import ApiUsage
 from app.models.spend_limits import SpendLimit
+from app.models.job_analysis import JobAnalysis
 
 router = APIRouter()
 
@@ -42,14 +43,13 @@ async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
     _check_secret(secret)
     import traceback as _tb
     try:
-        return await _get_stats_impl(secret, db)
+        return await _get_stats_impl(db)
     except Exception as exc:
-        err = _tb.format_exc()
-        print(f"[ADMIN STATS ERROR] {exc}\n{err}")
+        print(f"[ADMIN STATS ERROR] {exc}\n{_tb.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Stats error: {exc}")
 
 
-async def _get_stats_impl(secret: str, db: AsyncSession):
+async def _get_stats_impl(db: AsyncSession):
 
     now_utc = datetime.now(timezone.utc)
     today_start = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
@@ -86,6 +86,31 @@ async def _get_stats_impl(secret: str, db: AsyncSession):
         {"date": r.day.strftime("%Y-%m-%d"), "count": r.count}
         for r in reg_rows
     ]
+
+    # ── Job metrics (JobAnalysis.created_at is tz-naive TIMESTAMP) ──
+    jobs_total = (await db.execute(select(func.count(JobAnalysis.id)))).scalar()
+    jobs_today = (await db.execute(
+        select(func.count(JobAnalysis.id)).where(JobAnalysis.created_at >= today_start_naive)
+    )).scalar()
+    jobs_7d = (await db.execute(
+        select(func.count(JobAnalysis.id)).where(JobAnalysis.created_at >= days_7_ago_naive)
+    )).scalar()
+    jobs_30d = (await db.execute(
+        select(func.count(JobAnalysis.id)).where(JobAnalysis.created_at >= days_30_ago_naive)
+    )).scalar()
+    unique_companies_total = (await db.execute(
+        select(func.count(func.distinct(JobAnalysis.company_name)))
+    )).scalar()
+    unique_companies_30d = (await db.execute(
+        select(func.count(func.distinct(JobAnalysis.company_name))).where(
+            JobAnalysis.created_at >= days_30_ago_naive
+        )
+    )).scalar()
+    rec_rows = (await db.execute(
+        select(JobAnalysis.recommendation, func.count(JobAnalysis.id).label("cnt"))
+        .group_by(JobAnalysis.recommendation)
+    )).all()
+    by_recommendation = {str(r.recommendation): r.cnt for r in rec_rows}
 
     # ── Today's usage ──
     async def _sum_today(api_name, col):
@@ -234,6 +259,15 @@ async def _get_stats_impl(secret: str, db: AsyncSession):
             "by_day_30": by_day_30,
             "by_operation": by_operation,
         },
+        "jobs": {
+            "total_evaluated": jobs_total,
+            "today": jobs_today,
+            "last_7_days": jobs_7d,
+            "last_30_days": jobs_30d,
+            "unique_companies_total": unique_companies_total,
+            "unique_companies_30d": unique_companies_30d,
+            "by_recommendation": by_recommendation,
+        },
     }
 
 
@@ -343,11 +377,13 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <!-- Stat Cards -->
-  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+  <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
     <div class="card"><div class="stat-label">Total Users</div><div class="stat-val" id="sc-users">—</div></div>
     <div class="card"><div class="stat-label">New (7 days)</div><div class="stat-val" id="sc-new7">—</div></div>
     <div class="card"><div class="stat-label">This Month Cost</div><div class="stat-val" id="sc-monthcost">—</div></div>
     <div class="card"><div class="stat-label">Today API Calls</div><div class="stat-val" id="sc-todaycalls">—</div></div>
+    <div class="card"><div class="stat-label">Jobs Analyzed</div><div class="stat-val" id="sc-jobs">—</div></div>
+    <div class="card"><div class="stat-label">Unique Companies</div><div class="stat-val" id="sc-companies">—</div></div>
   </div>
 
   <!-- Today breakdown -->
@@ -381,6 +417,23 @@ _DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="card">
       <div class="section-title">Google CSE Queries — Last 30 Days</div>
       <canvas id="queryChart" height="200"></canvas>
+    </div>
+  </div>
+
+  <!-- Job Activity -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+    <div class="card">
+      <div class="section-title">Job Activity</div>
+      <div class="grid grid-cols-2 gap-4 text-sm">
+        <div><div class="stat-label">Today</div><div class="text-lg font-semibold text-amber-400" id="ja-today">—</div></div>
+        <div><div class="stat-label">Last 7 Days</div><div class="text-lg font-semibold text-amber-400" id="ja-7d">—</div></div>
+        <div><div class="stat-label">Last 30 Days</div><div class="text-lg font-semibold text-amber-400" id="ja-30d">—</div></div>
+        <div><div class="stat-label">Companies (30d)</div><div class="text-lg font-semibold text-amber-400" id="ja-co30">—</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title">By Recommendation</div>
+      <div class="space-y-3 mt-2" id="recBreakdown"><div style="color:#64748b;font-size:0.85rem">No data yet</div></div>
     </div>
   </div>
 
@@ -448,6 +501,36 @@ function renderStats(s) {
   document.getElementById('sc-monthcost').textContent = fmt$(monthCost);
   document.getElementById('sc-todaycalls').textContent =
     s.usage.today.anthropic_calls + s.usage.today.google_queries;
+  document.getElementById('sc-jobs').textContent = s.jobs.total_evaluated;
+  document.getElementById('sc-companies').textContent = s.jobs.unique_companies_total;
+
+  // Job activity
+  document.getElementById('ja-today').textContent = s.jobs.today;
+  document.getElementById('ja-7d').textContent = s.jobs.last_7_days;
+  document.getElementById('ja-30d').textContent = s.jobs.last_30_days;
+  document.getElementById('ja-co30').textContent = s.jobs.unique_companies_30d;
+
+  // Recommendation breakdown
+  const rec = s.jobs.by_recommendation || {};
+  const recTotal = Object.values(rec).reduce((a, b) => a + b, 0) || 1;
+  const recColors = { strong: '#22c55e', strategic: '#f59e0b', avoid: '#ef4444' };
+  const recEl = document.getElementById('recBreakdown');
+  const recKeys = ['strong', 'strategic', 'avoid'];
+  if (recKeys.some(k => rec[k])) {
+    recEl.innerHTML = recKeys.map(k => {
+      const cnt = rec[k] || 0;
+      const pct = Math.round(cnt / recTotal * 100);
+      return `<div class="flex items-center gap-2">
+        <span style="color:${recColors[k]};width:72px;font-size:0.8rem;text-transform:capitalize">${k}</span>
+        <div style="flex:1;background:#0f172a;border-radius:4px;height:10px;overflow:hidden">
+          <div style="width:${pct}%;background:${recColors[k]};border-radius:4px;height:10px"></div>
+        </div>
+        <span style="color:#94a3b8;font-size:0.8rem;width:50px;text-align:right">${cnt} (${pct}%)</span>
+      </div>`;
+    }).join('');
+  } else {
+    recEl.innerHTML = '<div style="color:#64748b;font-size:0.85rem">No data yet</div>';
+  }
 
   // Today breakdown
   document.getElementById('td-acost').textContent = fmt$(s.usage.today.anthropic_cost_usd);
