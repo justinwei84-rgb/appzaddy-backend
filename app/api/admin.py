@@ -63,8 +63,8 @@ async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
             func.count(User.id).label("count"),
         )
         .where(User.created_at >= days_30_ago)
-        .group_by(text("day"))
-        .order_by(text("day"))
+        .group_by(func.date_trunc("day", User.created_at))
+        .order_by(func.date_trunc("day", User.created_at))
     )).all()
     registrations = [
         {"date": r.day.strftime("%Y-%m-%d"), "count": r.count}
@@ -131,8 +131,8 @@ async def get_stats(secret: str, db: AsyncSession = Depends(get_db)):
             func.count(ApiUsage.id).label("calls"),
         )
         .where(ApiUsage.created_at >= days_30_ago)
-        .group_by(text("day"), ApiUsage.api_name)
-        .order_by(text("day"))
+        .group_by(func.date_trunc("day", ApiUsage.created_at), ApiUsage.api_name)
+        .order_by(func.date_trunc("day", ApiUsage.created_at))
     )).all()
 
     by_day_map: dict = {}
